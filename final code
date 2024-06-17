@@ -1,0 +1,83 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.multioutput import MultiOutputClassifier
+from sklearn.metrics import roc_auc_score
+
+train_features_path = 'train.csv'
+train_labels_path = 'training_set_labels.csv'
+test_features_path = 'test.csv'
+
+train_features = pd.read_csv(train_features_path)
+train_labels = pd.read_csv(train_labels_path)
+test_features = pd.read_csv(test_features_path)
+
+categorical_features = ['age_group', 'education', 'race', 'sex', 'income_poverty', 
+                        'marital_status', 'rent_or_own', 'employment_status', 
+                        'hhs_geo_region', 'census_msa', 'employment_industry', 
+                        'employment_occupation']
+numerical_features = ['xyz_concern', 'xyz_knowledge', 'opinion_xyz_vacc_effective', 
+                      'opinion_xyz_risk', 'opinion_xyz_sick_from_vacc', 
+                      'opinion_seas_vacc_effective', 'opinion_seas_risk', 
+                      'opinion_seas_sick_from_vacc', 'household_adults', 
+                      'household_children']
+
+numerical_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='mean')),
+    ('scaler', StandardScaler())
+])
+
+categorical_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore'))
+])
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', numerical_transformer, numerical_features),
+        ('cat', categorical_transformer, categorical_features)
+    ])
+
+X_train = train_features.drop(columns=['respondent_id'])
+y_train = train_labels[['xyz_vaccine', 'seasonal_vaccine']]
+
+X_test = test_features.drop(columns=['respondent_id'])
+
+model = RandomForestClassifier(random_state=42)
+
+clf = Pipeline(steps=[('preprocessor', preprocessor),
+                      ('classifier', MultiOutputClassifier(model, n_jobs=-1))])
+
+param_grid = {
+    'classifier__estimator__n_estimators': [100, 200],
+    'classifier__estimator__max_depth': [None, 10, 20]
+}
+
+grid_search = GridSearchCV(clf, param_grid, cv=5, scoring='roc_auc', n_jobs=-1)
+grid_search.fit(X_train, y_train)
+
+best_model = grid_search.best_estimator_
+
+y_pred_prob = best_model.predict_proba(X_test)
+y_pred_prob = np.column_stack([prob[:, 1] for prob in y_pred_prob])
+
+roc_auc_xyz = roc_auc_score(y_train['xyz_vaccine'], best_model.predict_proba(X_train)[0][:, 1])
+roc_auc_seasonal = roc_auc_score(y_train['seasonal_vaccine'], best_model.predict_proba(X_train)[1][:, 1])
+mean_roc_auc = np.mean([roc_auc_xyz, roc_auc_seasonal])
+
+print(f'ROC AUC for xyz_vaccine: {roc_auc_xyz}')
+print(f'ROC AUC for seasonal_vaccine: {roc_auc_seasonal}')
+print(f'Mean ROC AUC: {mean_roc_auc}')
+
+submission = pd.DataFrame({
+    'respondent_id': test_features['respondent_id'],
+    'xyz_vaccine': y_pred_prob[:, 0],
+    'seasonal_vaccine': y_pred_prob[:, 1]
+})
+
+submission.to_csv('submission.csv', index=False)
